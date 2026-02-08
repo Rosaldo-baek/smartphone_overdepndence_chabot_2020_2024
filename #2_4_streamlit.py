@@ -1,6 +1,7 @@
 # =========================================================
-# Streamlit 기반 스마트폰 과의존 실태조사 RAG 챗봇
-# (Hugging Face Hub에서 Chroma DB 다운로드 버전)
+# Streamlit 기반 스마트폰 과의존 실태조사 RAG 챗봇 v4
+# - Hugging Face Hub에서 Chroma DB 다운로드
+# - 사용자 가이드 표시
 # =========================================================
 import streamlit as st
 import json
@@ -8,7 +9,6 @@ import re
 import os
 import pandas as pd
 import shutil
-from pathlib import Path
 from typing import Dict, Any, List, Optional, TypedDict
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -37,8 +37,63 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main .block-container {
-        padding-top: 2rem;
+        padding-top: 1rem;
         padding-bottom: 2rem;
+    }
+    
+    .guide-box {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1.2rem;
+        border-radius: 12px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    }
+    
+    .guide-title {
+        font-size: 1.1rem;
+        font-weight: 700;
+        margin-bottom: 0.8rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .guide-item {
+        background: rgba(255,255,255,0.15);
+        padding: 0.7rem 1rem;
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+    
+    .guide-item:last-child {
+        margin-bottom: 0;
+    }
+    
+    .guide-icon {
+        font-weight: bold;
+        margin-right: 0.3rem;
+    }
+    
+    .warning-box {
+        background-color: #fff3cd;
+        border: 1px solid #ffc107;
+        color: #856404;
+        padding: 0.8rem 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 0.85rem;
+    }
+    
+    .status-box {
+        background-color: #e3f2fd;
+        padding: 0.8rem 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #2196f3;
+        margin: 0.5rem 0;
+        font-weight: 500;
     }
     
     .user-message {
@@ -61,24 +116,12 @@ st.markdown("""
         font-size: 14px !important;
     }
     
-    .status-box {
-        background-color: #fff3e0;
-        padding: 0.5rem 1rem;
-        border-radius: 5px;
-        border-left: 4px solid #ff9800;
-        margin: 0.5rem 0;
-    }
-    
-    .source-tag {
-        background-color: #e8f5e9;
-        padding: 0.2rem 0.5rem;
-        border-radius: 3px;
-        font-size: 0.85em;
-        color: #2e7d32;
-    }
-    
     h1 {
         color: #1a237e;
+    }
+    
+    .stChatMessage {
+        padding: 0.5rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -106,20 +149,35 @@ BOT_IDENTITY = """2020~2024년 스마트폰 과의존 실태조사 보고서 분
 """
 
 # =========================================================
-# Hugging Face 설정 -
+# Hugging Face 설정
 # =========================================================
-
-HF_REPO_ID = "Rosaldowithbaek/smartphone-addiction-chroma-db"  
+HF_REPO_ID = "Rosaldowithbaek/smartphone-addiction-chroma-db"
 LOCAL_DB_PATH = "./chroma_db_store"
 
-# 검색 파라미터
+# 검색 파라미터 (v4)
 N_QUERIES = 3
-K_PER_QUERY = 6
-TOP_PARENTS = 8
-TOP_PARENTS_PER_FILE = 2
-MAX_CHUNKS_PER_PARENT = 4
-MAX_CHARS_PER_DOC = 8000
+K_PER_QUERY = 10
+TOP_PARENTS = 15
+TOP_PARENTS_PER_FILE = 5
+MAX_CHUNKS_PER_PARENT = 5
+MAX_CHARS_PER_DOC = 10000
 SUMMARY_TYPES = ["page_summary", "table_summary"]
+
+# 키워드 분류
+TARGET_KEYWORDS = {
+    "대상": ["청소년", "유아동", "성인", "60대", "전체"],
+    "학령": ["유치원생", "초등학생", "중학생", "고등학생", "대학생"],
+    "성별": ["남성", "여성", "남자", "여자"],
+    "지역": ["대도시", "중소도시", "읍면지역", "읍/면"],
+    "위험군": ["과의존위험군", "일반사용자군", "고위험군", "잠재적위험군"],
+}
+
+TOPIC_KEYWORDS = {
+    "콘텐츠": ["숏폼", "SNS", "게임", "동영상", "메신저", "유튜브", "틱톡", "인스타그램"],
+    "지표": ["과의존률", "과의존", "이용률", "이용시간", "비율", "추이"],
+    "요인": ["가구원", "소득", "맞벌이", "한부모"],
+    "조사": ["조사방법", "표본", "설계", "척도", "표본설계"],
+}
 
 # =========================================================
 # 세션 상태 초기화
@@ -129,9 +187,6 @@ if "messages" not in st.session_state:
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
-
-if "db_downloaded" not in st.session_state:
-    st.session_state.db_downloaded = False
 
 # =========================================================
 # LangGraph State 정의
@@ -143,7 +198,7 @@ class GraphState(TypedDict):
     intent_raw: Optional[str]
     intent: Optional[str]
     is_chat_reference: Optional[bool]
-    is_new_topic: Optional[bool]
+    followup_type: Optional[str]
     plan: Optional[Dict[str, Any]]
     resolved_question: Optional[str]
     previous_context: Optional[str]
@@ -160,24 +215,19 @@ class GraphState(TypedDict):
 @st.cache_resource
 def download_chroma_db():
     """Hugging Face Hub에서 Chroma DB 다운로드"""
-    
-    # 이미 로컬에 있으면 스킵
     if os.path.exists(LOCAL_DB_PATH) and os.listdir(LOCAL_DB_PATH):
         return LOCAL_DB_PATH, None
     
     try:
         from huggingface_hub import snapshot_download
         
-        # 다운로드
         downloaded_path = snapshot_download(
             repo_id=HF_REPO_ID,
             repo_type="dataset",
             local_dir=LOCAL_DB_PATH,
             local_dir_use_symlinks=False
         )
-        
         return downloaded_path, None
-        
     except Exception as e:
         return None, str(e)
 
@@ -186,54 +236,38 @@ def download_chroma_db():
 # =========================================================
 @st.cache_resource
 def init_resources():
-    """리소스 초기화 (캐시됨)"""
-    
-    # API 키 설정
+    """리소스 초기화"""
     api_key = None
     
-    # 1. Streamlit secrets에서 시도
     try:
-        api_key = st.secrets["OPENAI_API_KEY"]
+        api_key = st.secrets.get("OPENAI_API_KEY")
     except:
         pass
     
-    # 2. 환경변수에서 시도
     if not api_key:
         api_key = os.environ.get("OPENAI_API_KEY")
-    
-    # 3. 파일에서 시도
-    if not api_key:
-        try:
-            with open('openai_api_for_rag_test.txt', 'r') as f:
-                api_key = f.read().strip()
-        except:
-            pass
     
     if not api_key:
         return None, None, "API 키를 찾을 수 없습니다."
     
     os.environ['OPENAI_API_KEY'] = api_key
     
-    # Chroma DB 경로 확인
-    db_path = LOCAL_DB_PATH
-    
-    if not os.path.exists(db_path):
-        return None, None, f"Chroma DB를 찾을 수 없습니다: {db_path}"
+    if not os.path.exists(LOCAL_DB_PATH):
+        return None, None, f"Chroma DB를 찾을 수 없습니다: {LOCAL_DB_PATH}"
     
     try:
         embedding = OpenAIEmbeddings(model='text-embedding-3-large')
         vectorstore = Chroma(
-            persist_directory=db_path,
+            persist_directory=LOCAL_DB_PATH,
             embedding_function=embedding,
             collection_name="pdf_pages_with_summary_v2"
         )
         
-        # LLM 설정
         llms = {
-            "router": ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=10),
-            "casual": ChatOpenAI(model="gpt-4o-mini", temperature=0.5, max_tokens=300),
-            "main": ChatOpenAI(model="gpt-4o", temperature=0.2, max_tokens=3000),
-            "planner": ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=800),
+            "router": ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=50),
+            "casual": ChatOpenAI(model="gpt-4o-mini", temperature=0.5, max_tokens=500),
+            "main": ChatOpenAI(model="gpt-4o", temperature=0.2, max_tokens=4000),
+            "planner": ChatOpenAI(model="gpt-4o", temperature=0, max_tokens=1000),
         }
         
         return vectorstore, llms, None
@@ -244,45 +278,27 @@ def init_resources():
 # 헬퍼 함수들
 # =========================================================
 def is_chat_reference_question(user_input: str) -> bool:
+    name_intro_patterns = [
+        r"(내|제)\s*이름은?\s*[가-힣a-zA-Z]+",
+        r"(저는|나는)\s*[가-힣a-zA-Z]+",
+    ]
+    for p in name_intro_patterns:
+        if re.search(p, user_input):
+            return False
+    
     patterns = [
-        r"내\s*이름", r"제\s*이름", r"나(를|의|한테)", 
-        r"뭐라고\s*(했|물어|말)", r"아까", r"방금", r"이전에",
+        r"(내|제)\s*이름\s*(뭐|뭔|알|기억)",
+        r"(내|제)\s*이름\s*[?]",
+        r"뭐라고\s*(했|물어|말)",
+        r"아까", r"방금", r"이전에",
     ]
     for p in patterns:
         if re.search(p, user_input):
             return True
     return False
 
-def is_new_topic_question(user_input: str, prev_keywords: List[str]) -> bool:
-    followup_patterns = [
-        r"^그러면\s", r"^그래서\s", r"^그건\s", r"^그\s",
-        r"결과는\s*\??$", r"어때\s*\??$", r"어떻게\s*(돼|되)\s*\??$",
-    ]
-    for p in followup_patterns:
-        if re.search(p, user_input):
-            return False
-    
-    new_topic_keywords = [
-        "숏폼", "SNS", "게임", "이용시간", "이용률",
-        "가구원", "소득", "지역", "성별", "연령",
-    ]
-    
-    input_has_new_topic = any(kw in user_input for kw in new_topic_keywords)
-    
-    if input_has_new_topic:
-        current_topics = [kw for kw in new_topic_keywords if kw in user_input]
-        overlap = set(current_topics) & set(prev_keywords)
-        if not overlap:
-            return True
-    
-    if len(user_input) > 30 and not any(re.search(p, user_input) for p in followup_patterns):
-        return True
-    
-    return False
-
 def parse_year_range(text: str) -> List[int]:
     years = set()
-    
     range_patterns = [
         r"(20[2][0-4])\s*년?\s*(?:에서|부터|~|-|–)\s*(20[2][0-4])\s*년?\s*(?:까지)?",
         r"(20[2][0-4])\s*(?:~|-|–)\s*(20[2][0-4])",
@@ -303,12 +319,73 @@ def parse_year_range(text: str) -> List[int]:
     
     return sorted(list(years))
 
+def classify_followup_type(user_input: str, prev_context: Dict[str, Any]) -> str:
+    user_input_clean = user_input.strip()
+    
+    if not prev_context.get("last_topic"):
+        return "none"
+    
+    has_new_topic_keyword = False
+    for category, keywords in TOPIC_KEYWORDS.items():
+        for kw in keywords:
+            if kw in user_input and kw not in str(prev_context.get("last_topic_core", "")):
+                has_new_topic_keyword = True
+                break
+    
+    if len(user_input) >= 30 and has_new_topic_keyword:
+        return "none"
+    
+    target_patterns = [
+        r"^(청소년|유아동|성인|60대|대학생|중학생|고등학생|초등학생|남성|여성)[은의]?\s*[?]?$",
+        r"^(청소년|유아동|성인|60대)[은의]?\s*(어때|어떻게|어떤가|결과|기준|경우)",
+        r"(청소년|유아동|성인|60대)[은의]?\s*(어때|어떻게|어떤가)\s*[?]?$",
+    ]
+    for p in target_patterns:
+        if re.search(p, user_input):
+            return "target_change"
+    
+    if len(user_input) <= 20:
+        for keywords in TARGET_KEYWORDS.values():
+            for kw in keywords:
+                if kw in user_input:
+                    return "target_change"
+    
+    year_patterns = [
+        r"^(20[2][0-4])년?\s*[은의]?\s*[?]?$",
+        r"^(20[2][0-4])년?\s*(어때|어떻게|결과|기준)",
+        r"그\s*(연도|해|년도)[는은]?",
+    ]
+    for p in year_patterns:
+        if re.search(p, user_input):
+            return "year_change"
+    
+    if len(user_input) <= 15:
+        years = parse_year_range(user_input)
+        if years:
+            return "year_change"
+    
+    detail_patterns = [
+        r"(더|좀)\s*(자세히|구체적|상세)",
+        r"(왜|원인|이유).*[?]",
+        r"(어떤|무슨)\s*(요인|이유|원인)",
+        r"^(그래서|그러면|그럼)\s*[?]?$",
+    ]
+    for p in detail_patterns:
+        if re.search(p, user_input):
+            return "detail_request"
+    
+    if len(user_input) <= 15 and re.search(r"[?]$", user_input):
+        return "detail_request"
+    
+    return "none"
+
 def extract_previous_context(chat_history: List[BaseMessage]) -> Dict[str, Any]:
     context = {
         "user_name": None,
         "last_topic": None,
+        "last_topic_core": None,
+        "last_target": None,
         "last_years": [],
-        "last_keywords": [],
     }
     
     if not chat_history:
@@ -320,60 +397,59 @@ def extract_previous_context(chat_history: List[BaseMessage]) -> Dict[str, Any]:
             if name_match:
                 context["user_name"] = name_match.group(1)
     
-    recent = chat_history[-4:] if len(chat_history) > 4 else chat_history
+    human_msgs = [m for m in chat_history if isinstance(m, HumanMessage)][-2:]
     
-    for msg in reversed(recent):
-        content = msg.content if hasattr(msg, 'content') else str(msg)
+    for msg in reversed(human_msgs):
+        content = msg.content
+        
+        if not context["last_topic"]:
+            context["last_topic"] = content[:300]
         
         years = parse_year_range(content)
         if years and not context["last_years"]:
             context["last_years"] = years
         
-        keywords = []
-        kw_patterns = [
-            r"(과의존|과의존률|위험군|고위험군)",
-            r"(청소년|유아동|성인|60대|대학생|중학생|고등학생|초등학생|학령별|대상별)",
-            r"(SNS|숏폼|게임|유튜브|틱톡|인스타)",
-            r"(이용률|이용시간|비율|변화|추이)",
-        ]
-        for p in kw_patterns:
-            found = re.findall(p, content)
-            keywords.extend(found)
+        if not context["last_target"]:
+            for keywords in TARGET_KEYWORDS.values():
+                for kw in keywords:
+                    if kw in content:
+                        context["last_target"] = kw
+                        break
+                if context["last_target"]:
+                    break
         
-        if keywords and not context["last_keywords"]:
-            context["last_keywords"] = list(set(keywords))
-        
-        if isinstance(msg, HumanMessage) and not context["last_topic"]:
-            context["last_topic"] = content[:200]
+        if not context["last_topic_core"]:
+            topic_parts = []
+            for keywords in TOPIC_KEYWORDS.values():
+                for kw in keywords:
+                    if kw in content:
+                        topic_parts.append(kw)
+            if topic_parts:
+                context["last_topic_core"] = " ".join(topic_parts[:3])
     
     return context
 
-def _keyword_boost_score(doc: Document, must_terms: List[str]) -> float:
+def _keyword_boost_score(doc: Document, query: str) -> float:
     text = (doc.page_content or "").lower()
-    text = re.sub(r"\s+", "", text)
-    
+    query_terms = re.findall(r'[가-힣a-zA-Z0-9]+', query.lower())
     boost = 0.0
-    for term in must_terms:
-        term_norm = re.sub(r"\s+", "", term.lower())
-        if term_norm in text:
-            boost += 0.05
-    return boost
+    for term in query_terms:
+        if len(term) >= 2 and term in text:
+            boost += 0.02
+    return min(boost, 0.15)
 
 # =========================================================
 # 테이블 파싱 및 렌더링
 # =========================================================
 def parse_markdown_table(text: str) -> List[Dict[str, Any]]:
-    """마크다운 테이블을 파싱"""
     tables = []
     lines = text.split('\n')
-    
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        
         if line.startswith('|') and line.endswith('|'):
             table_lines = []
-            
+            start_idx = i
             while i < len(lines):
                 line = lines[i].strip()
                 if line.startswith('|') and line.endswith('|'):
@@ -388,7 +464,6 @@ def parse_markdown_table(text: str) -> List[Dict[str, Any]]:
             if len(table_lines) >= 2:
                 header_line = table_lines[0]
                 headers = [h.strip() for h in header_line.split('|')[1:-1]]
-                
                 data_rows = []
                 for row_line in table_lines[1:]:
                     if '---' in row_line:
@@ -401,29 +476,15 @@ def parse_markdown_table(text: str) -> List[Dict[str, Any]]:
                     tables.append({
                         'headers': headers,
                         'rows': data_rows,
-                        'start_idx': i - len(table_lines),
+                        'start_idx': start_idx,
                         'end_idx': i
                     })
         else:
             i += 1
-    
     return tables
 
-def render_table(headers: List[str], rows: List[List[str]]) -> None:
-    """테이블을 Streamlit DataFrame으로 렌더링"""
-    try:
-        df = pd.DataFrame(rows, columns=headers)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.markdown("| " + " | ".join(headers) + " |")
-        st.markdown("| " + " | ".join(["---"] * len(headers)) + " |")
-        for row in rows:
-            st.markdown("| " + " | ".join(row) + " |")
-
 def render_answer_with_tables(answer: str) -> None:
-    """답변을 테이블과 텍스트로 분리하여 렌더링"""
     tables = parse_markdown_table(answer)
-    
     if not tables:
         st.markdown(answer)
         return
@@ -436,7 +497,13 @@ def render_answer_with_tables(answer: str) -> None:
         if before_text.strip():
             st.markdown(before_text)
         
-        render_table(table['headers'], table['rows'])
+        try:
+            df = pd.DataFrame(table['rows'], columns=table['headers'])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        except:
+            st.markdown("| " + " | ".join(table['headers']) + " |")
+            for row in table['rows']:
+                st.markdown("| " + " | ".join(row) + " |")
         
         current_pos = table['end_idx']
     
@@ -452,12 +519,12 @@ def get_router_prompt():
         ("system",
          "사용자 질문을 분류하는 라우터입니다.\n"
          "이 시스템은 '스마트폰 과의존 실태조사 보고서(2020~2024)' 전문 RAG입니다.\n\n"
-         "분류 기준:\n"
-         "SMALLTALK: 인사, 감사, 잡담, 시스템 소개 요청\n"
-         "RAG: 스마트폰 과의존 조사 관련 질문\n"
-         "CHAT_REF: 이전 대화 내용 참조\n"
+         "분류 기준 (하나만 선택):\n"
+         "SMALLTALK: 인사, 시스템 질문\n"
+         "RAG: 스마트폰 과의존 관련 질문\n"
+         "CHAT_REF: 이전 대화 참조\n"
          "OFFTOPIC: 완전히 관련 없는 주제\n\n"
-         "출력: SMALLTALK / RAG / CHAT_REF / OFFTOPIC 중 하나만"
+         "출력: 분류명만"
         ),
         MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}")
@@ -466,13 +533,13 @@ def get_router_prompt():
 def get_smalltalk_prompt():
     return ChatPromptTemplate.from_messages([
         ("system",
-         "스마트폰 과의존 실태조사 보고서(2020~2024년) 분석 시스템입니다.\n\n"
+         f"당신은 스마트폰 과의존 실태조사 보고서(2020~2024년) 분석 시스템입니다.\n\n"
          f"시스템 역할:\n{BOT_IDENTITY}\n\n"
          "응답 지침:\n"
-         "- 인사에는 간결하게 응대하고 시스템 역할을 안내\n"
-         "- 이모티콘 사용 금지\n"
-         "- 격식체 사용 (습니다/입니다)\n"
-         "- 2~3문장으로 간결하게"
+         "- 인사에는 간결하게 응대\n"
+         "- 사용자가 이름을 소개하면 '{{이름}}님, 반갑습니다'로 응대\n"
+         "- 역할 소개 시 예시 질문 제안\n"
+         "- 이모티콘 금지, 격식체 사용"
         ),
         MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}")
@@ -481,12 +548,10 @@ def get_smalltalk_prompt():
 def get_offtopic_prompt():
     return ChatPromptTemplate.from_messages([
         ("system",
-         "스마트폰 과의존 실태조사 보고서(2020~2024년) 분석 시스템입니다.\n\n"
-         f"시스템 역할:\n{BOT_IDENTITY}\n\n"
-         "도메인 외 질문 응대:\n"
-         "- 해당 주제는 전문 분야가 아님을 안내\n"
-         "- 스마트폰 과의존 관련 질문은 도움 가능함을 언급\n"
-         "- 격식체 사용, 2~3문장으로 간결하게"
+         "당신은 스마트폰 과의존 실태조사 보고서 분석 시스템입니다.\n"
+         "해당 질문은 전문 분야가 아닙니다.\n"
+         "정중하게 안내하고, 스마트폰 과의존 관련 질문은 도움 가능하다고 알려주세요.\n"
+         "이모티콘 금지, 간결하게."
         ),
         MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}")
@@ -496,30 +561,30 @@ def get_planner_prompt():
     return ChatPromptTemplate.from_messages([
         ("system",
          "스마트폰 과의존 실태조사 보고서(2020~2024년) 검색 계획 수립기입니다.\n"
-         "반드시 유효한 JSON만 출력하십시오.\n\n"
-         "임무:\n"
-         "1. 사용자 질문을 자기완결형으로 재구성\n"
-         "2. 검색 쿼리 3개 생성\n"
-         "3. 필요한 연도/파일 식별\n\n"
-         "새 주제 vs 후속질문 판단:\n"
-         "- is_new_topic=true: 이전 맥락 무시\n"
-         "- is_new_topic=false: 이전 맥락 활용\n\n"
-         "연도 범위 처리:\n"
-         "- '2021년에서 2024년까지' → years: [2021, 2022, 2023, 2024]\n\n"
+         "반드시 유효한 JSON만 출력하세요.\n\n"
+         "후속질문 유형별 처리:\n"
+         "- followup_type='none': 이전 맥락 무시\n"
+         "- followup_type='target_change': 이전 주제 유지 + 새 대상\n"
+         "- followup_type='year_change': 이전 주제 유지 + 새 연도\n"
+         "- followup_type='detail_request': 이전 맥락 전체 유지\n\n"
+         "멀티연도 쿼리 생성: 각 연도별로 구체적인 쿼리 포함\n\n"
          "허용 파일명:\n" +
          "\n".join([f"- {y}년: {fn}" for y, fn in YEAR_TO_FILENAME.items()]) +
          "\n\nJSON 스키마:\n"
-         "{\n"
+         "{{\n"
          '  "resolved_question": "완전한 질문",\n'
          '  "years": [2020, ...],\n'
          '  "file_name_filters": ["파일명"],\n'
-         '  "query_type": "조사설계" | "결과/분석",\n'
-         '  "must_keep_terms": ["핵심용어"],\n'
          '  "queries": ["쿼리1", "쿼리2", "쿼리3"]\n'
-         "}"
+         "}}"
         ),
         MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "현재 질문: {input}\n새 주제 여부: {is_new_topic}\n이전 맥락: {prev_context}\n\nJSON:")
+        ("human", 
+         "현재 질문: {input}\n"
+         "후속질문 유형: {followup_type}\n"
+         "이전 핵심 주제: {topic_core}\n"
+         "이전 대상: {last_target}\n"
+         "이전 연도: {last_years}\n\nJSON:")
     ])
 
 def get_answer_prompt():
@@ -530,19 +595,18 @@ def get_answer_prompt():
          "1. CONTEXT에 있는 구체적인 수치/비율을 반드시 인용\n"
          "2. 모든 수치에는 출처(파일명 p.페이지) 필수\n"
          "3. 연도별 비교 시 변화량(%p) 명시\n"
-         "4. 객관적이고 담백한 톤 유지\n\n"
-         "형식 규칙:\n"
+         "4. 객관적이고 담백한 톤\n\n"
+         "형식:\n"
          "- 핵심 수치를 먼저 제시\n"
-         "- 연도별 데이터는 마크다운 표 형식 사용\n"
-         "- 이모티콘 사용 금지\n"
-         "- 격식체 사용\n\n"
-         "주의:\n"
-         "- CONTEXT에 없는 연도는 '해당 연도 데이터는 검색 결과에 포함되지 않았습니다'로 명시\n"
-         "- 추측하지 않고 데이터 기반으로만 답변"
+         "- 연도별/대상별 데이터는 표 형식 권장\n"
+         "- 이모티콘 금지, 격식체 사용\n\n"
+         "중요:\n"
+         "- CONTEXT에 없는 연도/항목은 '해당 데이터는 검색 결과에 포함되지 않았습니다'로 명시\n"
+         "- 추측 금지, 데이터 기반으로만 답변"
         ),
         ("human",
          "[질문]\n{input}\n\n"
-         "[검색 결과]\n{context}\n\n"
+         "[검색 결과 (CONTEXT)]\n{context}\n\n"
          "위 검색 결과에서 구체적인 수치를 인용하여 답변하십시오.")
     ])
 
@@ -551,71 +615,72 @@ def get_validator_prompt():
         ("system",
          "통계 보고서 답변 품질 검수기입니다.\n\n"
          "검수 항목:\n"
-         "1. 수치/비율에 출처 있는지\n"
-         "2. CONTEXT에 없는 수치를 생성했는지\n"
-         "3. 질문에서 요청한 연도/항목을 모두 다뤘는지\n\n"
+         "1. 수치에 출처 있는지\n"
+         "2. CONTEXT에 없는 수치 생성했는지\n"
+         "3. 요청한 연도/대상 모두 다뤘는지\n\n"
          "JSON만 출력:\n"
-         "{\n"
+         "{{\n"
          '  "needs_fix": true|false,\n'
          '  "issues": ["문제점"],\n'
-         '  "corrected_answer": "수정된 답변 또는 빈 문자열"\n'
-         "}"
+         '  "corrected_answer": "수정된 답변"\n'
+         "}}"
         ),
         ("human",
          "[질문]\n{input}\n\n"
          "[검색 결과]\n{context}\n\n"
-         "[답변]\n{answer}\n\n"
-         "JSON:")
+         "[답변]\n{answer}\n\nJSON:")
     ])
 
 # =========================================================
 # 노드 함수들
 # =========================================================
 def create_node_functions(vectorstore, llms, status_placeholder):
-    """노드 함수들을 생성하고 반환"""
     
     def update_status(message: str):
         status_placeholder.markdown(f"""
-        <div style="background-color: #fff3e0; padding: 0.8rem 1rem; border-radius: 8px; 
-                    border-left: 4px solid #ff9800; margin: 0.5rem 0;">
-            <span style="font-weight: 500;">🔄 {message}</span>
-        </div>
+        <div class="status-box">🔄 {message}</div>
         """, unsafe_allow_html=True)
     
     def route_intent(state: GraphState) -> GraphState:
         update_status("질문 분석 중...")
-        
         try:
             user_input = state["input"]
             chat_history = state.get("chat_history", [])
             
             if is_chat_reference_question(user_input):
-                state["intent_raw"] = "CHAT_REF"
                 state["intent"] = "CHAT_REF"
                 state["is_chat_reference"] = True
+                state["followup_type"] = "none"
                 return state
             
             prev_ctx = extract_previous_context(chat_history)
-            state["is_new_topic"] = is_new_topic_question(user_input, prev_ctx.get("last_keywords", []))
+            followup_type = classify_followup_type(user_input, prev_ctx)
+            state["followup_type"] = followup_type
+            
+            rag_keywords = [
+                "과의존", "스마트폰", "조사", "실태", "비율", "률", "%",
+                "통계", "수치", "결과", "청소년", "대학생", "성인", "유아동",
+                "숏폼", "SNS", "게임", "이용률", "위험군", "60대",
+                "초등학생", "중학생", "고등학생"
+            ]
+            
+            if re.search(r"\b(20[2][0-4])\s*년?\b", user_input):
+                state["intent"] = "RAG"
+                return state
+            
+            if any(kw in user_input for kw in rag_keywords):
+                state["intent"] = "RAG"
+                return state
+            
+            if followup_type != "none":
+                state["intent"] = "RAG"
+                return state
             
             result = (get_router_prompt() | llms["router"] | StrOutputParser()).invoke({
                 "input": user_input,
                 "chat_history": chat_history
             })
             state["intent_raw"] = result.strip().upper()
-            
-            if re.search(r"\b(20[2][0-4])\s*년?\b", user_input):
-                state["intent"] = "RAG"
-                return state
-            
-            rag_keywords = [
-                "과의존", "스마트폰", "조사", "실태", "비율", "률", "%",
-                "통계", "수치", "결과", "청소년", "대학생", "성인",
-                "숏폼", "SNS", "게임", "이용률", "위험군"
-            ]
-            if any(kw in user_input for kw in rag_keywords):
-                state["intent"] = "RAG"
-                return state
             
             if state["intent_raw"] in ("SMALLTALK", "RAG", "OFFTOPIC", "CHAT_REF"):
                 state["intent"] = state["intent_raw"]
@@ -625,6 +690,7 @@ def create_node_functions(vectorstore, llms, status_placeholder):
             return state
         except Exception as e:
             state["intent"] = "RAG"
+            state["followup_type"] = "none"
             return state
     
     def handle_smalltalk(state: GraphState) -> GraphState:
@@ -667,14 +733,14 @@ def create_node_functions(vectorstore, llms, status_placeholder):
                     state["final_answer"] = "아직 이름을 말씀해주시지 않았습니다."
                 return state
             
-            if re.search(r"(뭐라고|무슨\s*말|뭐\s*물어)", user_input):
+            if re.search(r"(뭐라고|무슨\s*말)", user_input):
                 if prev_ctx["last_topic"]:
                     state["final_answer"] = f"이전에 '{prev_ctx['last_topic'][:80]}...'에 대해 질문하셨습니다."
                 else:
                     state["final_answer"] = "이전 대화 내용을 찾지 못했습니다."
                 return state
             
-            state["final_answer"] = "이전 대화 참조가 명확하지 않습니다. 질문을 다시 말씀해주시겠습니까?"
+            state["final_answer"] = "이전 대화 참조가 명확하지 않습니다."
             return state
         except Exception as e:
             state["final_answer"] = f"오류가 발생했습니다: {e}"
@@ -685,30 +751,28 @@ def create_node_functions(vectorstore, llms, status_placeholder):
         try:
             user_input = state["input"]
             chat_history = state.get("chat_history", [])
-            is_new_topic = state.get("is_new_topic", True)
+            followup_type = state.get("followup_type", "none")
             
             prev_ctx = extract_previous_context(chat_history)
             
-            if is_new_topic:
-                prev_context_str = "새로운 주제 - 이전 맥락 무시"
+            if followup_type == "none":
+                topic_core = ""
+                last_target = ""
+                last_years = []
             else:
-                prev_context_str = ""
-                if prev_ctx["last_topic"]:
-                    prev_context_str += f"이전 주제: {prev_ctx['last_topic'][:100]}\n"
-                if prev_ctx["last_years"]:
-                    prev_context_str += f"이전 연도: {prev_ctx['last_years']}\n"
-                if prev_ctx["last_keywords"]:
-                    prev_context_str += f"이전 키워드: {prev_ctx['last_keywords']}"
-                if not prev_context_str:
-                    prev_context_str = "없음"
+                topic_core = prev_ctx.get("last_topic_core", "") or ""
+                last_target = prev_ctx.get("last_target", "") or ""
+                last_years = prev_ctx.get("last_years", [])
             
-            state["previous_context"] = prev_context_str
+            state["previous_context"] = f"type={followup_type}, topic={topic_core}"
             
             result = (get_planner_prompt() | llms["planner"] | StrOutputParser()).invoke({
                 "input": user_input,
-                "chat_history": chat_history,
-                "is_new_topic": str(is_new_topic),
-                "prev_context": prev_context_str
+                "chat_history": chat_history[-4:] if len(chat_history) > 4 else chat_history,
+                "followup_type": followup_type,
+                "topic_core": topic_core,
+                "last_target": last_target,
+                "last_years": str(last_years),
             })
             
             json_match = re.search(r'\{[\s\S]*\}', result)
@@ -724,10 +788,11 @@ def create_node_functions(vectorstore, llms, status_placeholder):
             input_years = parse_year_range(user_input)
             years = list(set(years + input_years))
             years = [y for y in years if isinstance(y, int) and y in YEAR_TO_FILENAME]
-            years = sorted(years)
             
-            if not years and not is_new_topic and prev_ctx["last_years"]:
-                years = prev_ctx["last_years"]
+            if followup_type == "year_change" and not years and last_years:
+                years = last_years
+            
+            years = sorted(years)
             
             fns = plan.get("file_name_filters", [])
             if not isinstance(fns, list):
@@ -742,62 +807,37 @@ def create_node_functions(vectorstore, llms, status_placeholder):
                 queries = []
             queries = [str(q).strip() for q in queries if str(q).strip()]
             
-            resolved_q = plan.get("resolved_question", "")
-            if not isinstance(resolved_q, str):
-                resolved_q = ""
-            resolved_q = resolved_q.strip()
+            resolved_q = plan.get("resolved_question", user_input)
+            if not isinstance(resolved_q, str) or not resolved_q.strip():
+                resolved_q = user_input
             
-            if len(resolved_q) < 15 and not is_new_topic and prev_ctx["last_keywords"]:
-                keywords_str = " ".join(prev_ctx["last_keywords"])
-                resolved_q = f"{keywords_str} {resolved_q}".strip()
-            
-            fallback_q = resolved_q or user_input
             while len(queries) < N_QUERIES:
-                queries.append(fallback_q)
-            if len(queries) > N_QUERIES:
-                queries = queries[:N_QUERIES]
-            
-            keep = plan.get('must_keep_terms', [])
-            if not isinstance(keep, list):
-                keep = []
-            keep = [str(x).strip() for x in keep if str(x).strip()]
-            
-            if not is_new_topic and prev_ctx["last_keywords"]:
-                keep = list(set(keep + prev_ctx["last_keywords"]))
+                queries.append(resolved_q)
+            queries = queries[:N_QUERIES]
             
             state["plan"] = {
                 "years": years,
                 "file_name_filters": fns,
-                "query_type": plan.get('query_type', "결과/분석"),
-                "must_keep_terms": keep,
                 "queries": queries,
                 "resolved_question": resolved_q,
+                "followup_type": followup_type,
             }
             state["resolved_question"] = resolved_q
             
             return state
             
         except Exception as e:
-            is_new_topic = state.get("is_new_topic", True)
-            prev_ctx = extract_previous_context(state.get("chat_history", []))
-            fallback_years = parse_year_range(state["input"])
-            
-            if not fallback_years and not is_new_topic and prev_ctx["last_years"]:
-                fallback_years = prev_ctx["last_years"]
-            
-            fallback_fns = [YEAR_TO_FILENAME[y] for y in fallback_years if y in YEAR_TO_FILENAME]
-            
-            resolved = state["input"]
+            years = parse_year_range(state["input"])
+            fns = [YEAR_TO_FILENAME[y] for y in years if y in YEAR_TO_FILENAME]
             
             state["plan"] = {
-                "years": fallback_years,
-                "file_name_filters": fallback_fns,
-                "query_type": "결과/분석",
-                "must_keep_terms": [] if is_new_topic else prev_ctx.get("last_keywords", []),
-                "queries": [resolved] * N_QUERIES,
-                "resolved_question": resolved,
+                "years": years,
+                "file_name_filters": fns,
+                "queries": [state["input"]] * N_QUERIES,
+                "resolved_question": state["input"],
+                "followup_type": "none",
             }
-            state["resolved_question"] = resolved
+            state["resolved_question"] = state["input"]
             return state
     
     def retrieve_documents(state: GraphState) -> GraphState:
@@ -806,9 +846,19 @@ def create_node_functions(vectorstore, llms, status_placeholder):
             plan = state["plan"]
             target_files = plan.get("file_name_filters", [])
             queries = plan.get("queries", [])
-            must_terms = plan.get("must_keep_terms", [])
+            resolved_q = plan.get("resolved_question", "")
+            years = plan.get("years", [])
+            
+            # 멀티연도 쿼리 자동 추가
+            if len(years) > 1:
+                base_query_clean = re.sub(r'20[2][0-4]년?', '', resolved_q).strip()
+                for y in years:
+                    year_query = f"{y}년 {base_query_clean}"
+                    if year_query not in queries:
+                        queries.append(year_query)
             
             all_docs = []
+            files_searched = []
             
             if target_files:
                 for fn in target_files:
@@ -823,25 +873,31 @@ def create_node_functions(vectorstore, llms, status_placeholder):
                     for q in queries:
                         if not q:
                             continue
-                        hits = vectorstore.similarity_search_with_relevance_scores(
-                            q, k=K_PER_QUERY, filter=file_filter
-                        )
-                        for doc, score in hits:
-                            key = f"{doc.metadata.get('parent_id')}|{doc.metadata.get('page')}"
-                            if key in seen_keys:
-                                continue
-                            doc.metadata["_score"] = float(score)
-                            doc.metadata["_source_file"] = fn
-                            file_docs.append(doc)
-                            seen_keys.add(key)
+                        try:
+                            hits = vectorstore.similarity_search_with_relevance_scores(
+                                q, k=K_PER_QUERY, filter=file_filter
+                            )
+                            for doc, score in hits:
+                                key = f"{doc.metadata.get('parent_id')}|{doc.metadata.get('page')}"
+                                if key in seen_keys:
+                                    continue
+                                doc.metadata["_score"] = float(score)
+                                doc.metadata["_source_file"] = fn
+                                file_docs.append(doc)
+                                seen_keys.add(key)
+                        except Exception as e:
+                            pass
                     
                     for doc in file_docs:
                         base_score = doc.metadata.get("_score", 0.0)
-                        boost = _keyword_boost_score(doc, must_terms)
+                        boost = _keyword_boost_score(doc, resolved_q)
                         doc.metadata["_final_score"] = base_score + boost
                     
                     file_docs.sort(key=lambda d: d.metadata.get("_final_score", 0.0), reverse=True)
                     all_docs.extend(file_docs[:TOP_PARENTS_PER_FILE * 2])
+                    
+                    if file_docs:
+                        files_searched.append(fn)
             else:
                 base_filter = {'doc_type': {"$in": SUMMARY_TYPES}}
                 seen_keys = set()
@@ -862,8 +918,10 @@ def create_node_functions(vectorstore, llms, status_placeholder):
                 
                 for doc in all_docs:
                     base_score = doc.metadata.get("_score", 0.0)
-                    boost = _keyword_boost_score(doc, must_terms)
+                    boost = _keyword_boost_score(doc, resolved_q)
                     doc.metadata["_final_score"] = base_score + boost
+                
+                files_searched = ["전체"]
             
             all_docs.sort(key=lambda d: d.metadata.get("_final_score", 0.0), reverse=True)
             
@@ -873,7 +931,7 @@ def create_node_functions(vectorstore, llms, status_placeholder):
             if target_files:
                 for fn in target_files:
                     for doc in all_docs:
-                        if doc.metadata.get("file_name") != fn:
+                        if doc.metadata.get("file_name") != fn and doc.metadata.get("_source_file") != fn:
                             continue
                         pid = doc.metadata.get("parent_id")
                         if pid and pid not in seen_pid:
@@ -900,25 +958,28 @@ def create_node_functions(vectorstore, llms, status_placeholder):
             
             expanded_chunks = []
             for pid in parent_ids:
-                got = vectorstore._collection.get(
-                    where={'parent_id': pid},
-                    include=['documents', 'metadatas']
-                )
-                docs = got.get("documents", []) or []
-                metas = got.get("metadatas", []) or []
-                
-                chunks = []
-                for txt, meta in zip(docs, metas):
-                    if not isinstance(meta, dict):
-                        continue
-                    if meta.get("doc_type") != "text_chunk":
-                        continue
-                    idx = int(meta.get("chunk_index", 0))
-                    chunks.append((idx, txt or "", meta))
-                
-                chunks.sort(key=lambda x: x[0])
-                for idx, txt, meta in chunks[:MAX_CHUNKS_PER_PARENT]:
-                    expanded_chunks.append(Document(page_content=txt, metadata=meta))
+                try:
+                    got = vectorstore._collection.get(
+                        where={'parent_id': pid},
+                        include=['documents', 'metadatas']
+                    )
+                    docs = got.get("documents", []) or []
+                    metas = got.get("metadatas", []) or []
+                    
+                    chunks = []
+                    for txt, meta in zip(docs, metas):
+                        if not isinstance(meta, dict):
+                            continue
+                        if meta.get("doc_type") != "text_chunk":
+                            continue
+                        idx = int(meta.get("chunk_index", 0))
+                        chunks.append((idx, txt or "", meta))
+                    
+                    chunks.sort(key=lambda x: x[0])
+                    for idx, txt, meta in chunks[:MAX_CHUNKS_PER_PARENT]:
+                        expanded_chunks.append(Document(page_content=txt, metadata=meta))
+                except:
+                    pass
             
             pid_set = set(parent_ids)
             kept_summaries = [d for d in all_docs if d.metadata.get("parent_id") in pid_set]
@@ -936,7 +997,8 @@ def create_node_functions(vectorstore, llms, status_placeholder):
             state["retrieval"] = {
                 "docs": final_docs,
                 "parent_ids": parent_ids,
-                "files_searched": target_files or ["전체"],
+                "files_searched": files_searched,
+                "doc_count": len(final_docs),
             }
             state["context"] = context
             
@@ -944,14 +1006,21 @@ def create_node_functions(vectorstore, llms, status_placeholder):
             
         except Exception as e:
             state["context"] = ""
+            state["retrieval"] = {"docs": [], "parent_ids": [], "files_searched": [], "doc_count": 0}
             return state
     
     def generate_answer(state: GraphState) -> GraphState:
         update_status("답변 생성 중...")
         try:
+            context = state.get("context", "")
+            
+            if not context.strip():
+                state["draft_answer"] = "검색 결과를 찾지 못했습니다. 질문을 다시 구체적으로 말씀해주시겠습니까?"
+                return state
+            
             answer = (get_answer_prompt() | llms["main"] | StrOutputParser()).invoke({
                 "input": state["resolved_question"] or state["input"],
-                "context": state.get("context", "")
+                "context": context
             })
             state["draft_answer"] = answer
             return state
@@ -981,8 +1050,7 @@ def create_node_functions(vectorstore, llms, status_placeholder):
                 state["final_answer"] = state["draft_answer"]
             
             return state
-            
-        except Exception as e:
+        except:
             state["final_answer"] = state["draft_answer"]
             return state
     
@@ -1007,7 +1075,6 @@ def create_node_functions(vectorstore, llms, status_placeholder):
 # 그래프 빌더
 # =========================================================
 def build_graph(node_functions):
-    """LangGraph 빌드"""
     workflow = StateGraph(GraphState)
     
     for name, func in node_functions.items():
@@ -1068,19 +1135,20 @@ def build_graph(node_functions):
 # 메인 UI
 # =========================================================
 def main():
-    # 헤더
     st.title("📊 스마트폰 과의존 실태조사 분석 시스템")
     
+    # =========================================================
     # 사이드바
+    # =========================================================
     with st.sidebar:
-        st.header("시스템 정보")
+        st.header("📋 시스템 정보")
         st.markdown(BOT_IDENTITY)
         
         st.divider()
         
-        st.subheader("데이터 범위")
-        for year, filename in YEAR_TO_FILENAME.items():
-            st.caption(f"• {year}년")
+        st.subheader("📅 데이터 범위")
+        for year in YEAR_TO_FILENAME.keys():
+            st.caption(f"• {year}년 보고서")
         
         st.divider()
         
@@ -1091,19 +1159,42 @@ def main():
         
         st.divider()
         
-        debug_mode = st.checkbox("디버그 모드", value=False)
+        debug_mode = st.checkbox("🔧 디버그 모드", value=False)
         
         st.divider()
-        st.caption(f"DB 경로: {LOCAL_DB_PATH}")
         st.caption(f"HF Repo: {HF_REPO_ID}")
     
     # =========================================================
-    # DB 다운로드 (필요시)
+    # ✅ 사용자 가이드 박스
+    # =========================================================
+    st.markdown("""
+    <div class="guide-box">
+        <div class="guide-title">📌 사용 안내</div>
+        <div class="guide-item">
+            <span class="guide-icon">ℹ️</span>
+            <strong>용도:</strong> 이 시스템은 <u>스마트폰 과의존 실태조사 보고서(2020~2024)</u>의 
+            <strong>단순 정보 검색용</strong>입니다. 인사이트 제공, 일반 대화, 보고서 외 정보 검색에는 적합하지 않습니다.
+        </div>
+        <div class="guide-item">
+            <span class="guide-icon">💡</span>
+            <strong>검색 팁:</strong> 질문은 <strong>최대한 구체적으로</strong> 작성해 주세요. 
+            예) "과의존률" → "2024년 청소년 스마트폰 과의존 위험군 비율"
+        </div>
+        <div class="guide-item">
+            <span class="guide-icon">⚠️</span>
+            <strong>주의:</strong> AI 생성 답변은 <strong>오류(할루시네이션)</strong>가 있을 수 있습니다. 
+            반드시 <a href="https://www.nia.or.kr" target="_blank" style="color: #fff; text-decoration: underline;">NIA 홈페이지</a>에서 
+            원문을 확인하세요. (페이지 번호는 PDF 파일 순서 기준)
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # =========================================================
+    # DB 다운로드
     # =========================================================
     if not os.path.exists(LOCAL_DB_PATH) or not os.listdir(LOCAL_DB_PATH):
         st.info("🔄 Chroma DB를 다운로드하고 있습니다. 잠시만 기다려주세요...")
-        
-        with st.spinner("Hugging Face에서 데이터베이스 다운로드 중..."):
+        with st.spinner(f"Hugging Face에서 다운로드 중... ({HF_REPO_ID})"):
             db_path, error = download_chroma_db()
         
         if error:
@@ -1121,9 +1212,8 @@ def main():
     
     if error:
         st.error(f"초기화 오류: {error}")
-        
         if "API" in error:
-            st.info("OpenAI API 키를 설정해주세요.")
+            st.info("Streamlit Secrets에 OPENAI_API_KEY를 설정해주세요.")
             with st.form("api_key_form"):
                 api_key = st.text_input("OpenAI API 키", type="password")
                 submitted = st.form_submit_button("설정")
@@ -1145,7 +1235,7 @@ def main():
     # =========================================================
     # 사용자 입력
     # =========================================================
-    if prompt := st.chat_input("질문을 입력하세요..."):
+    if prompt := st.chat_input("질문을 입력하세요... (예: 2024년 청소년 과의존률은?)"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -1176,24 +1266,21 @@ def main():
                 with answer_placeholder.container():
                     render_answer_with_tables(final_answer)
                 
+                # 디버그 정보
                 if debug_mode:
                     with st.expander("🔍 디버그 정보", expanded=False):
                         col1, col2 = st.columns(2)
-                        
                         with col1:
-                            st.subheader("Intent")
-                            st.write(f"분류: {result.get('intent', 'N/A')}")
-                            st.write(f"새 주제: {result.get('is_new_topic', 'N/A')}")
-                        
+                            st.write(f"**Intent:** {result.get('intent', 'N/A')}")
+                            st.write(f"**Followup Type:** {result.get('followup_type', 'N/A')}")
                         with col2:
                             if result.get("plan"):
-                                st.subheader("Plan")
+                                st.write("**Plan:**")
                                 st.json(result["plan"])
                         
                         if result.get("retrieval"):
-                            st.subheader("Retrieval")
-                            st.write(f"검색 파일: {result['retrieval'].get('files_searched', [])}")
-                            st.write(f"문서 수: {len(result['retrieval'].get('docs', []))}")
+                            st.write(f"**검색 파일:** {result['retrieval'].get('files_searched', [])}")
+                            st.write(f"**문서 수:** {result['retrieval'].get('doc_count', 0)}")
                 
                 st.session_state.messages.append({"role": "assistant", "content": final_answer})
                 st.session_state.chat_history.append(HumanMessage(content=prompt))
@@ -1211,4 +1298,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
